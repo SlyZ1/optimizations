@@ -1,13 +1,11 @@
 #ifndef OPTI_HPP
 #define OPTI_HPP
-#include <glm/glm.hpp>
 #include <functional>
 #include <stdexcept>
 #include <iostream>
 #include <Eigen/Dense>
 
 using namespace std;
-using namespace glm;
 using namespace Eigen;
 
 using Mat = MatrixXf;
