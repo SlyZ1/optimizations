@@ -30,13 +30,17 @@ Mat opti::BFGS_multiply(const Mat& H0_inv, const vector<Vec>& s, const vector<Ve
     vector<float> alpha(m);
     Vec r = d;
     for(int i = m - 1; i >= 0; i--){
-        alpha[i] = s[i].dot(r) / y[i].dot(s[i]);
+        float ys = y[i].dot(s[i]);
+        if (ys < 1e-10f) continue;
+        alpha[i] = s[i].dot(r) / ys;
         r = r - alpha[i] * y[i];
     }
     r = H0_inv * r;
     for(int i = 0; i < m; i++){
-        float beta = y[i].dot(r) / y[i].dot(s[i]);
-        r = r + s[i] * (alpha[m - 1 - i] - beta);
+        float ys = y[i].dot(s[i]);
+        if (ys < 1e-10f) continue;
+        float beta = y[i].dot(r) / ys;
+        r = r + s[i] * (alpha[i] - beta);
     }
     return r;
 }
@@ -69,12 +73,13 @@ Mat opti::hessian(const Func f, const Vec& x, float h){
 
 Vec opti::gradient(const Func f, const Vec& x, float h){
     Vec g(x.size());
+    float f_x = f(x);
     for(int i = 0; i < x.size(); i++){
         Vec x_plus_h = x;
         Vec x_minus_h = x;
         x_plus_h[i] += h;
         x_minus_h[i] -= h;
-        g[i] = (f(x_plus_h) - f(x_minus_h)) / (2 * h);
+        g[i] = (f(x_plus_h) - f_x) / (h);
     }
     return g;
 }
@@ -188,22 +193,27 @@ Vec opti::project_gradient(const Vec& g, const Vec& x, const Vec& l, const Vec& 
 }
 
 Vec opti::L_BFGS_B(const Func f, const Vec& x0, const Mat& H0_inv, int m, const Vec& l, const Vec& u, 
-                   int max_iter, float tol) {
+                   int max_iter, float tol, UpdateFunc update) {
     int dim = x0.size();
     vector<Vec> s_list;
     vector<Vec> y_list;
-
     Vec xi = opti::clamp(x0, l, u);
+
+    if (update) update(xi);
     Vec gi = gradient(f, xi);
     Vec d = - H0_inv * gi;
     for(int i = 0; i < max_iter; i++){
 
         if (project_gradient(gi, xi, l, u).lpNorm<Infinity>() < tol){
-            cout << "projected " << project_gradient(gi, xi, l, u).lpNorm<Infinity>() << endl;
             return xi;
         }
 
         d = project_gradient(d, xi, l, u);
+        float g_dot_d = d.dot(gi);
+        if (g_dot_d > 0) {
+            d = -gi;
+            g_dot_d = d.dot(gi);
+        }
 
         //max step size
         float alpha = 1;
@@ -211,16 +221,18 @@ Vec opti::L_BFGS_B(const Func f, const Vec& x0, const Mat& H0_inv, int m, const 
             if (d(j) > 0) alpha = std::min(alpha, (u(j) - xi(j)) / d(j));
             else if (d(j) < 0) alpha = std::min(alpha, (l(j) - xi(j)) / d(j));
         }
-        cout << "alpha: " << alpha << endl;
 
         //backtracking line search
         Vec xi_new = opti::clamp(xi + d * alpha, l, u);
+        if (update) update(xi_new);
+        float f_xi = f(xi);
         for(int j = 0; j < 50; j++){
-            if(f(xi_new) < f(xi)){
+            if (f(xi_new) <= f_xi + 1e-4 * alpha * g_dot_d) {
                 break;
             }
             alpha *= 0.5f;
             xi_new = opti::clamp(xi + d * alpha, l, u);
+            if (update) update(xi_new);
         }
 
         if((xi_new - xi).norm() < tol){
@@ -230,14 +242,20 @@ Vec opti::L_BFGS_B(const Func f, const Vec& x0, const Mat& H0_inv, int m, const 
         Vec gi_new = gradient(f, xi_new);
         Vec s = xi_new - xi;
         Vec y = gi_new - gi;
-        s_list.push_back(s);
-        y_list.push_back(y);
-        if(s_list.size() > m){
-            s_list.erase(s_list.begin());
-            y_list.erase(y_list.begin());
+        float ys = y.dot(s);
+        if (ys > 1e-10f){
+            s_list.push_back(s);
+            y_list.push_back(y);
+            if(s_list.size() > m){
+                s_list.erase(s_list.begin());
+                y_list.erase(y_list.begin());
+            }
         }
-        d = BFGS_multiply(H0_inv, s_list, y_list, d);
-        
+        else{
+            continue;
+        }
+
+        d = -BFGS_multiply(H0_inv, s_list, y_list, gi_new);
         xi = xi_new;
         gi = gi_new;
     }
